@@ -15,6 +15,10 @@
   Written by Limor Fried/Ladyada for Adafruit in any redistribution
  ****************************************************/
 
+#ifndef ADAFRUIT_MLX90614_H
+#define ADAFRUIT_MLX90614_H
+
+// Local fork: checked transactions, Celsius PWM limits, and interface configuration.
 #include <Adafruit_I2CDevice.h>
 #include <Arduino.h>
 
@@ -45,6 +49,9 @@
  */
 class Adafruit_MLX90614 {
 public:
+  Adafruit_MLX90614() = default;
+  Adafruit_MLX90614(const Adafruit_MLX90614&) = delete;
+  Adafruit_MLX90614& operator=(const Adafruit_MLX90614&) = delete;
   ~Adafruit_MLX90614();
   bool begin(uint8_t addr = MLX90614_I2CADDR, TwoWire *wire = &Wire);
 
@@ -56,23 +63,28 @@ public:
 
   // EMISSIVITY
   uint16_t readEmissivityReg(void);
-  void writeEmissivityReg(uint16_t ereg);
+  bool writeEmissivityReg(uint16_t ereg);
   double readEmissivity(void);
-  void writeEmissivity(double emissivity);
+  bool writeEmissivity(double emissivity);
 
   // MIN TEMP
-  int readTempMin(void);
-  void writeTempMin(int minTemp);
+  float readTempMin(void);
+  bool writeTempMin(float minTemp);
 
   // MAX TEMP
-  int readTempMax(void);
-  void writeTempMax(int maxTemp);
+  float readTempMax(void);
+  bool writeTempMax(float maxTemp);
+  bool writeTemperatureRange(float minTemp, float maxTemp);
 
   // COMMUNICATION PROTOCOL
+  // Reports EEPROM startup mode, not the active interface after an SMBus request.
   String getCommunicationMode(void);
+  // Call before Wire.begin(); requires external pull-ups, releases SCL afterward.
+  static void requestSMBus(uint8_t sclPin = SCL);
   uint16_t readI2CAddr(void);
-  void switchToPWM(void);
-  void switchToI2C(void);
+  // Single object1 PWM, no repetitions; period in nominal 1.024ms units (1..127).
+  bool switchToPWM(uint8_t period = 1);
+  bool switchToI2C(void);
 
   // DEBUGGING
   void printAllRegisters(void);
@@ -81,8 +93,12 @@ private:
   Adafruit_I2CDevice *i2c_dev = NULL; ///< Pointer to I2C bus interface
   float readTemp(uint8_t reg);
 
-  uint16_t read16(uint8_t addr);
-  void write16(uint8_t addr, uint16_t data);
+  bool read16(uint8_t addr, uint16_t &value);
+  bool write16(uint8_t addr, uint16_t data);
+  bool writeEEPROM(uint8_t addr, uint16_t data);
+  static bool encodeLimit(float celsius, uint16_t &word);
   byte crc8(byte *addr, byte len);
-  uint8_t _addr;
+  uint8_t _addr = MLX90614_I2CADDR;
 };
+
+#endif // ADAFRUIT_MLX90614_H

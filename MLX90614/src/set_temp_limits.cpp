@@ -1,32 +1,15 @@
-#include <Arduino.h>
-#include <Adafruit_MLX90614.h>
-#include <Adafruit_BusIO_Register.h>
-#include <Adafruit_SPIDevice.h>
-#include <SPI.h>
-
-// *** SET MIN AND MAX TEMPS *** 
-Adafruit_MLX90614 mlx = Adafruit_MLX90614();
-
+#include "sensor_setup.h"
+#include "pwm_temperature.h"
+Adafruit_MLX90614 mlx;
 void setup() {
-  Serial.begin(9600);
-  while (!Serial);
-
-  if (!mlx.begin()) {
-    Serial.println("Error connecting to MLX sensor. Check wiring.");
-    while (1);
-  };
-
-  mlx.begin();
-
-  mlx.writeTempMin(0);
-  mlx.writeTempMax(125);
-
-  Serial.print("Temp Min = "); Serial.println(mlx.readTempMin());
-  Serial.println("================================================");
-
-  Serial.print("Temp Max= "); Serial.println(mlx.readTempMax());
-  Serial.println("================================================");
+    Serial.begin(9600);
+    if (!beginSensor(mlx)) return;
+    if (!mlx.writeTemperatureRange(MLX::PWM_MIN_C, MLX::PWM_MAX_C)) {
+        Serial.println("PWM range write/verification failed.");
+        return;
+    }
+    Serial.print("Stored minimum C: "); Serial.println(mlx.readTempMin());
+    Serial.print("Stored maximum C: "); Serial.println(mlx.readTempMax());
+    Serial.println("Power-cycle the sensor to apply EEPROM changes.");
 }
-
-void loop() {
-}
+void loop() {}

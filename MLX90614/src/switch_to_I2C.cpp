@@ -1,33 +1,13 @@
-#include <Arduino.h>
-#include <Adafruit_MLX90614.h>
-#include <Adafruit_BusIO_Register.h>
-#include <Adafruit_SPIDevice.h>
-#include <SPI.h>
-
-// *** SWITCH TO I2C MODE *** 
-Adafruit_MLX90614 mlx = Adafruit_MLX90614();
-
+#include "sensor_setup.h"
+Adafruit_MLX90614 mlx;
 void setup() {
-  Serial.begin(9600);
-  while (!Serial);
-
-
-  if (!mlx.begin()) {
-    Serial.println("Error connecting to MLX sensor. Check wiring.");
-    while (1);
-  };
-
-  mlx.begin();
-  Serial.println("Configuring MLX90614 for I2C mode...");
-
-  mlx.switchToI2C();
-  if (mlx.getCommunicationMode() == "I2C") {
-    Serial.println("Switched to I2C mode");
-  } else {
-    Serial.println("Failed to switch to I2C mode");
-  }
+    Serial.begin(9600);
+    if (!beginSensor(mlx)) return;
+    if (!mlx.switchToI2C()) {
+        Serial.println("Interface write/verification failed.");
+        return;
+    }
+    Serial.print("Stored startup interface: "); Serial.println(mlx.getCommunicationMode());
+    Serial.println("Power-cycle the sensor to activate the stored interface.");
 }
-
-void loop() {
-  // Your main loop code
-}
+void loop() {}

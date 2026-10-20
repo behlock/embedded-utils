@@ -15,7 +15,7 @@
 double new_emissivity = 0.95;
 //===========================
 
-Adafruit_MLX90614 mlx = Adafruit_MLX90614();
+Adafruit_MLX90614 mlx;
 
 void setup() {
   Serial.begin(9600);

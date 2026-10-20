@@ -1,7 +1,9 @@
 #ifndef MIDI_FREQ_H
 #define MIDI_FREQ_H
 
-#include <Arduino.h>
+#include "../synth/detail.h"
+#include <stdio.h>
+#include <string.h>
 
 namespace Synth {
 
@@ -11,35 +13,21 @@ namespace Synth {
 // Usage:
 //   float freq = midiNoteToFrequency(60);  // C4 = 261.63 Hz
 //   uint8_t note = frequencyToMidiNote(440.0);  // A4 = 69
-//   const char* name = noteName(60);  // "C4"
+//   char name[5]; getNoteNameWithOctave(60, name, sizeof(name)); // "C4"
 
-// Pre-computed frequency table for all 128 MIDI notes
-// Stored as 16-bit fixed point (frequency * 100) to save memory
-// For notes 0-127 (C-1 to G9)
-const uint16_t MIDI_FREQ_TABLE[128] PROGMEM = {
-    // Octave -1 (notes 0-11): C-1 to B-1
-    817, 866, 918, 972, 1030, 1091, 1156, 1225, 1297, 1375, 1457, 1543,
-    // Octave 0 (notes 12-23): C0 to B0
+// All entries use frequency * 100, including the highest MIDI notes.
+const uint32_t MIDI_FREQ_TABLE[128] PROGMEM = {
+    818, 866, 918, 972, 1030, 1091, 1156, 1225, 1298, 1375, 1457, 1543,
     1635, 1732, 1835, 1945, 2060, 2183, 2312, 2450, 2596, 2750, 2914, 3087,
-    // Octave 1 (notes 24-35): C1 to B1
     3270, 3465, 3671, 3889, 4120, 4365, 4625, 4900, 5191, 5500, 5827, 6174,
-    // Octave 2 (notes 36-47): C2 to B2
     6541, 6930, 7342, 7778, 8241, 8731, 9250, 9800, 10383, 11000, 11654, 12347,
-    // Octave 3 (notes 48-59): C3 to B3
     13081, 13859, 14683, 15556, 16481, 17461, 18500, 19600, 20765, 22000, 23308, 24694,
-    // Octave 4 (notes 60-71): C4 to B4 - Middle C octave
     26163, 27718, 29366, 31113, 32963, 34923, 36999, 39200, 41530, 44000, 46616, 49388,
-    // Octave 5 (notes 72-83): C5 to B5
     52325, 55437, 58733, 62225, 65926, 69846, 73999, 78399, 83061, 88000, 93233, 98777,
-    // Octave 6 (notes 84-95): C6 to B6
-    // Values exceed uint16_t max, stored as freq/10
-    10465, 11087, 11747, 12445, 13185, 13969, 14800, 15680, 16612, 17600, 18647, 19755,
-    // Octave 7 (notes 96-107): C7 to B7 (stored as freq/10)
-    20930, 22175, 23493, 24890, 26370, 27938, 29600, 31360, 33224, 35200, 37293, 39511,
-    // Octave 8 (notes 108-119): C8 to B8 (stored as freq/10)
-    41860, 44349, 46986, 49780, 52740, 55877, 59199, 62719, 66449, 70400, 74586, 79021,
-    // Octave 9 (notes 120-127): C9 to G9 (stored as freq/10)
-    83720, 88698, 93973, 99561, 105481, 111753, 118398, 125439
+    104650, 110873, 117466, 124451, 131851, 139691, 147998, 156798, 166122, 176000, 186466, 197553,
+    209300, 221746, 234932, 248902, 263702, 279383, 295996, 313596, 332244, 352000, 372931, 395107,
+    418601, 443492, 469864, 497803, 527404, 558765, 591991, 627193, 664488, 704000, 745862, 790213,
+    837202, 886984, 939727, 995606, 1054808, 1117530, 1183982, 1254385,
 };
 
 // Note names for display
@@ -51,18 +39,12 @@ const char NOTE_NAMES[12][3] PROGMEM = {
 inline float midiNoteToFrequency(uint8_t note) {
     if (note > 127) note = 127;
 
-    uint16_t tableValue = pgm_read_word(&MIDI_FREQ_TABLE[note]);
-
-    // Notes 0-83 are stored as freq*100, notes 84-127 as freq/10
-    if (note < 84) {
-        return tableValue / 100.0f;
-    } else {
-        return tableValue * 10.0f;
-    }
+    return pgm_read_dword(&MIDI_FREQ_TABLE[note]) / 100.0f;
 }
 
 // Convert MIDI note to frequency using calculation (more precise but slower)
 inline float midiNoteToFrequencyCalc(uint8_t note) {
+    if (note > 127) note = 127;
     // f = 440 * 2^((note - 69) / 12)
     return 440.0f * pow(2.0f, (note - 69) / 12.0f);
 }
@@ -70,28 +52,30 @@ inline float midiNoteToFrequencyCalc(uint8_t note) {
 // Convert frequency to nearest MIDI note
 inline uint8_t frequencyToMidiNote(float freq) {
     // note = 12 * log2(freq / 440) + 69
-    if (freq <= 0) return 0;
-    float note = 12.0f * log2(freq / 440.0f) + 69.0f;
+    if (isnan(freq) || freq <= 0) return 0;
+    if (isinf(freq)) return 127;
+    float note = 12.0f * log(freq / 440.0f) * 1.44269504089f + 69.0f;
     if (note < 0) return 0;
     if (note > 127) return 127;
     return (uint8_t)(note + 0.5f);
 }
 
-// Get note name (e.g., "C", "C#", "D")
-inline void getNoteName(uint8_t note, char* buffer) {
-    uint8_t noteIndex = note % 12;
-    strcpy_P(buffer, NOTE_NAMES[noteIndex]);
+// Callers using the default capacity must provide at least 3 / 5 bytes.
+inline bool getNoteName(uint8_t note, char* buffer, size_t capacity = 3) {
+    if (!buffer || capacity == 0) return false;
+    if (note > 127) note = 127;
+    char name[3];
+    strcpy_P(name, NOTE_NAMES[note % 12]);
+    int count = snprintf(buffer, capacity, "%s", name);
+    return count >= 0 && static_cast<size_t>(count) < capacity;
 }
-
-// Get full note name with octave (e.g., "C4", "A#3")
-inline void getNoteNameWithOctave(uint8_t note, char* buffer) {
-    uint8_t noteIndex = note % 12;
-    int8_t octave = (note / 12) - 1;
-
-    strcpy_P(buffer, NOTE_NAMES[noteIndex]);
-    char octaveStr[4];
-    itoa(octave, octaveStr, 10);
-    strcat(buffer, octaveStr);
+inline bool getNoteNameWithOctave(uint8_t note, char* buffer, size_t capacity = 5) {
+    if (!buffer || capacity == 0) return false;
+    if (note > 127) note = 127;
+    char name[3];
+    strcpy_P(name, NOTE_NAMES[note % 12]);
+    int count = snprintf(buffer, capacity, "%s%d", name, static_cast<int>(note / 12) - 1);
+    return count >= 0 && static_cast<size_t>(count) < capacity;
 }
 
 // Common note definitions
@@ -126,6 +110,7 @@ namespace Notes {
 // bendValue: 0-16383 (8192 = center, no bend)
 // range: semitones of max bend (default 2)
 inline float applyPitchBend(float baseFreq, uint16_t bendValue, float range = 2.0f) {
+    if (bendValue > 16383) bendValue = 16383;
     float bendSemitones = ((float)bendValue - 8192.0f) / 8192.0f * range;
     return baseFreq * pow(2.0f, bendSemitones / 12.0f);
 }

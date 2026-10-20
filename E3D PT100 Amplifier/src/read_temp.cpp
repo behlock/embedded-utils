@@ -1,7 +1,5 @@
 #include <Arduino.h>
-#include <Adafruit_BusIO_Register.h>
-#include <Adafruit_SPIDevice.h>
-#include <SPI.h>
+#include <math.h>
 
 const int PT100_PIN = A13; // Analog input pin connected to the PT100 amplifier output
 const float VREF = 5.0;    // Voltage reference of the Arduino (3.3V or 5V, depending on the board)
@@ -19,13 +17,13 @@ void setup() {
 
 float interpolateTemperature(float voltage) {
   // If the voltage is outside the valid range, return an error value
-  if (voltage < vOut[0] || voltage > vOut[numDataPoints - 1]) {
-    return -1000;
+  if (!isfinite(voltage) || voltage < vOut[0] || voltage > vOut[numDataPoints - 1]) {
+    return NAN;
   }
 
   // Find the index of the voltage interval
   int index = 0;
-  while (voltage > vOut[index + 1]) {
+  while (index < numDataPoints - 2 && voltage > vOut[index + 1]) {
     index++;
   }
 
@@ -44,7 +42,9 @@ void loop() {
 
   Serial.print("Raw ADC value: "); Serial.println(raw_adc);
   Serial.print("Voltage: "); Serial.print(voltage, 3); Serial.println(" V");
-  Serial.print("Temperature: "); Serial.print(temperature, 2); Serial.println(" °C");
+  if (isfinite(temperature)) {
+    Serial.print("Temperature: "); Serial.print(temperature, 2); Serial.println(" C");
+  } else Serial.println("Invalid PT100 amplifier voltage.");
 
   delay(1000);
 }

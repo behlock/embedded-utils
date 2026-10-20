@@ -1,7 +1,7 @@
 #ifndef FILTER_H
 #define FILTER_H
 
-#include <Arduino.h>
+#include "../synth/detail.h"
 
 namespace Synth {
 
@@ -20,6 +20,7 @@ public:
     OnePoleFilter()
         : _coefficient(128)
         , _lastOutput(0)
+        , _lastOutputSigned(0)
     {}
 
     // Set filter coefficient (0-255)
@@ -33,6 +34,7 @@ public:
     void setCutoff(float ratio) {
         // Approximate coefficient from cutoff ratio
         // Lower ratio = lower cutoff = more filtering
+        ratio = detail::clamp(ratio, 0.0f, 1.0f);
         if (ratio >= 1.0f) {
             _coefficient = 0;
         } else if (ratio <= 0.0f) {
@@ -44,19 +46,14 @@ public:
 
     // Process sample (8-bit)
     uint8_t process(uint8_t input) {
-        // output = (input * (256-coeff) + lastOutput * coeff) / 256
-        uint16_t temp = (uint16_t)input * (256 - _coefficient);
-        temp += (uint16_t)_lastOutput * _coefficient;
-        _lastOutput = temp >> 8;
-        return _lastOutput;
+        _lastOutput += (input - _lastOutput) * ((256 - _coefficient) / 256.0f);
+        return detail::unsigned8(_lastOutput + 0.5f);
     }
 
-    // Process signed sample
     int8_t processSigned(int8_t input) {
-        int16_t temp = (int16_t)input * (256 - _coefficient);
-        temp += (int16_t)_lastOutputSigned * _coefficient;
-        _lastOutputSigned = temp >> 8;
-        return _lastOutputSigned;
+        _lastOutputSigned += (input - _lastOutputSigned) * ((256 - _coefficient) / 256.0f);
+        float rounded = _lastOutputSigned < 0 ? _lastOutputSigned - 0.5f : _lastOutputSigned + 0.5f;
+        return static_cast<int8_t>(detail::clamp(rounded, -128.0f, 127.0f));
     }
 
     void reset() {
@@ -66,8 +63,8 @@ public:
 
 private:
     uint8_t _coefficient;
-    uint8_t _lastOutput;
-    int8_t _lastOutputSigned;
+    float _lastOutput;
+    float _lastOutputSigned;
 };
 
 // State Variable Filter (SVF)
@@ -76,7 +73,7 @@ private:
 class StateVariableFilter {
 public:
     StateVariableFilter(uint32_t sampleRate = 44100)
-        : _sampleRate(sampleRate)
+        : _sampleRate(detail::sampleRate(sampleRate))
         , _cutoff(1000.0f)
         , _resonance(0.5f)
         , _low(0)
@@ -87,19 +84,20 @@ public:
     }
 
     void setCutoff(float freq) {
-        _cutoff = constrain(freq, 20.0f, _sampleRate / 2.0f);
+        _cutoff = detail::clamp(freq, 0.0f, _sampleRate / 8.0f);
         calculateCoefficients();
     }
 
     // Resonance: 0.0 to 1.0 (higher = more resonant peak)
     void setResonance(float res) {
-        _resonance = constrain(res, 0.0f, 0.99f);
+        _resonance = detail::clamp(res, 0.0f, 0.99f);
         calculateCoefficients();
     }
 
     void setSampleRate(uint32_t rate) {
+        if (rate == 0) return;
         _sampleRate = rate;
-        calculateCoefficients();
+        setCutoff(_cutoff);
     }
 
     // Process sample and update all outputs
@@ -109,31 +107,27 @@ public:
         _high = _scale * input - _low - _q * _band;
         _band += _f * _high;
 
-        // Clamp to prevent overflow
-        _low = constrain(_low, -32768, 32767);
-        _band = constrain(_band, -32768, 32767);
-        _high = constrain(_high, -32768, 32767);
     }
 
     // Get outputs after processing
-    int16_t lowPass() const { return _low; }
-    int16_t highPass() const { return _high; }
-    int16_t bandPass() const { return _band; }
+    int16_t lowPass() const { return detail::signed16(_low); }
+    int16_t highPass() const { return detail::signed16(_high); }
+    int16_t bandPass() const { return detail::signed16(_band); }
 
     // Notch (band-reject) = low + high
-    int16_t notch() const { return _low + _high; }
+    int16_t notch() const { return detail::signed16(_low + _high); }
 
     // Convenience methods for 8-bit audio
     uint8_t lowPass8() const {
-        return constrain((_low >> 8) + 128, 0, 255);
+        return detail::unsigned8(_low / 256.0f + 128);
     }
 
     uint8_t highPass8() const {
-        return constrain((_high >> 8) + 128, 0, 255);
+        return detail::unsigned8(_high / 256.0f + 128);
     }
 
     uint8_t bandPass8() const {
-        return constrain((_band >> 8) + 128, 0, 255);
+        return detail::unsigned8(_band / 256.0f + 128);
     }
 
     void reset() {
@@ -147,6 +141,8 @@ public:
 
 private:
     void calculateCoefficients() {
+        // Conservative stability bound for this single-step Chamberlin SVF.
+        _cutoff = detail::clamp(_cutoff, 0.0f, _sampleRate / 8.0f);
         // f = 2 * sin(pi * cutoff / sampleRate)
         _f = 2.0f * sin(PI * _cutoff / _sampleRate);
 
@@ -165,9 +161,9 @@ private:
     float _q;      // Damping coefficient
     float _scale;  // Input scaling
 
-    int16_t _low;
-    int16_t _band;
-    int16_t _high;
+    float _low;
+    float _band;
+    float _high;
 };
 
 // Moog-style ladder filter approximation
@@ -176,7 +172,7 @@ private:
 class MoogFilter {
 public:
     MoogFilter(uint32_t sampleRate = 44100)
-        : _sampleRate(sampleRate)
+        : _sampleRate(detail::sampleRate(sampleRate))
         , _cutoff(1000.0f)
         , _resonance(0.0f)
     {
@@ -185,19 +181,20 @@ public:
     }
 
     void setCutoff(float freq) {
-        _cutoff = constrain(freq, 20.0f, _sampleRate / 2.5f);
+        _cutoff = detail::clamp(freq, 0.0f, _sampleRate / 2.5f);
         calculateCoefficients();
     }
 
-    // Resonance 0.0 to 1.0 (can self-oscillate near 1.0)
+    // Resonance 0.0 to 1.0 (feedback amount)
     void setResonance(float res) {
-        _resonance = constrain(res, 0.0f, 1.0f);
+        _resonance = detail::clamp(res, 0.0f, 1.0f);
         calculateCoefficients();
     }
 
     void setSampleRate(uint32_t rate) {
+        if (rate == 0) return;
         _sampleRate = rate;
-        calculateCoefficients();
+        setCutoff(_cutoff);
     }
 
     int16_t process(int16_t input) {
@@ -212,13 +209,13 @@ public:
         _stage[2] += _p * (tanh(_stage[1]) - tanh(_stage[2]));
         _stage[3] += _p * (tanh(_stage[2]) - tanh(_stage[3]));
 
-        return (int16_t)(_stage[3] * 32767.0f);
+        return detail::signed16(_stage[3] * 32767.0f);
     }
 
     uint8_t process8(uint8_t input) {
-        int16_t in16 = ((int16_t)input - 128) << 8;
+        int16_t in16 = ((int16_t)input - 128) * 256;
         int16_t out16 = process(in16);
-        return (out16 >> 8) + 128;
+        return detail::unsigned8(out16 / 256.0f + 128);
     }
 
     void reset() {
@@ -238,6 +235,7 @@ private:
 
     void calculateCoefficients() {
         // Attempt to match analog filter response
+        _cutoff = detail::clamp(_cutoff, 0.0f, _sampleRate / 2.5f);
         float fc = _cutoff / _sampleRate;
         _p = fc * (1.8f - 0.8f * fc);
     }
@@ -254,7 +252,7 @@ private:
 class DCBlocker {
 public:
     DCBlocker(float coefficient = 0.995f)
-        : _R(coefficient)
+        : _R(detail::clamp(coefficient, 0.0f, 0.9999f))
         , _xPrev(0)
         , _yPrev(0)
     {}
@@ -264,7 +262,7 @@ public:
         float output = input - _xPrev + _R * _yPrev;
         _xPrev = input;
         _yPrev = output;
-        return (int16_t)output;
+        return detail::signed16(output);
     }
 
     void reset() {

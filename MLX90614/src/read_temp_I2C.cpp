@@ -1,35 +1,21 @@
-#include <Arduino.h>
-#include <Adafruit_MLX90614.h>
-#include <Adafruit_BusIO_Register.h>
-#include <Adafruit_SPIDevice.h>
-#include <SPI.h>
-
-// *** READ TEMP IN I2C MODE ***
-Adafruit_MLX90614 mlx = Adafruit_MLX90614();
+#include "sensor_setup.h"
+#include <math.h>
+Adafruit_MLX90614 mlx;
 
 void setup() {
-  Serial.begin(9600);
-  while (!Serial);
-
-  // if (!mlx.begin()) {
-  //   Serial.println("Error connecting to MLX sensor. Check wiring.");
-  //   while (1);
-  // };
-
-  Serial.print("Emissivity = "); Serial.println(mlx.readEmissivity());
-  Serial.println("================================================");
-
-  Serial.print("Temp Max= "); Serial.println(mlx.readTempMax());
-  Serial.println("================================================");
-
-  Serial.print("Temp Min = "); Serial.println(mlx.readTempMin());
-  Serial.println("================================================");
+    Serial.begin(9600);
+    if (!beginSensor(mlx)) return;
+    Serial.print("Emissivity: "); Serial.println(mlx.readEmissivity());
+    Serial.print("PWM minimum C: "); Serial.println(mlx.readTempMin());
+    Serial.print("PWM maximum C: "); Serial.println(mlx.readTempMax());
+    delay(300);
 }
-
 void loop() {
-  Serial.print("Ambient = "); Serial.print(mlx.readAmbientTempC());
-  Serial.print("*C\tObject = "); Serial.print(mlx.readObjectTempC()); Serial.println("*C");
-
-  Serial.println();
-  delay(1000);
+    double ambient = mlx.readAmbientTempC(), object = mlx.readObjectTempC();
+    if (!isfinite(ambient) || !isfinite(object)) Serial.println("Temperature read failed.");
+    else {
+        Serial.print("Ambient C: "); Serial.print(ambient);
+        Serial.print("; object C: "); Serial.println(object);
+    }
+    delay(1000);
 }

@@ -1,7 +1,7 @@
 #ifndef OSCILLATOR_H
 #define OSCILLATOR_H
 
-#include <Arduino.h>
+#include "../synth/detail.h"
 
 namespace Synth {
 
@@ -38,7 +38,7 @@ const uint8_t SINE_TABLE[256] PROGMEM = {
 class Oscillator {
 public:
     Oscillator(uint32_t sampleRate = 44100)
-        : _sampleRate(sampleRate)
+        : _sampleRate(detail::sampleRate(sampleRate))
         , _frequency(440.0f)
         , _phase(0)
         , _phaseIncrement(0)
@@ -49,9 +49,10 @@ public:
     }
 
     void setFrequency(float freq) {
-        _frequency = freq;
-        // Phase increment for 16-bit phase accumulator (0-65535)
-        _phaseIncrement = (uint16_t)((freq * 65536.0f) / _sampleRate);
+        _frequency = detail::clamp(freq, 0.0f, _sampleRate / 2.0f);
+        // 32-bit phase improves tuning, especially at low frequencies.
+        _phaseIncrement = static_cast<uint32_t>(
+            (_frequency * 4294967296.0 / _sampleRate) + 0.5);
     }
 
     void setWaveform(Waveform wf) {
@@ -63,6 +64,7 @@ public:
     }
 
     void setSampleRate(uint32_t rate) {
+        if (rate == 0) return;
         _sampleRate = rate;
         setFrequency(_frequency);
     }
@@ -70,7 +72,7 @@ public:
     // Returns 8-bit sample (0-255)
     uint8_t nextSample() {
         uint8_t sample = 0;
-        uint8_t phaseIndex = _phase >> 8; // Top 8 bits of phase
+        uint8_t phaseIndex = _phase >> 24; // Top 8 bits of phase
 
         switch (_waveform) {
             case Waveform::SINE:
@@ -115,8 +117,8 @@ public:
 private:
     uint32_t _sampleRate;
     float _frequency;
-    uint16_t _phase;
-    uint16_t _phaseIncrement;
+    uint32_t _phase;
+    uint32_t _phaseIncrement;
     Waveform _waveform;
     uint8_t _pulseWidth;
 };

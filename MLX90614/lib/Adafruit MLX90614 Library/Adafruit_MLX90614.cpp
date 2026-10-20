@@ -16,301 +16,166 @@
   BSD license, all text above must be included in any redistribution
  ****************************************************/
 
+// Local fork; see README.md for API changes and configuration assumptions.
 #include "Adafruit_MLX90614.h"
+#include <math.h>
 
-Adafruit_MLX90614::~Adafruit_MLX90614() {
-  if (i2c_dev)
-    delete i2c_dev;
-}
+Adafruit_MLX90614::~Adafruit_MLX90614() { delete i2c_dev; }
 
-/**
- * @brief Begin the I2C connection
- * @param addr I2C address for the device.
- * @param wire Pointer to Wire instance
- * @return True if the device was successfully initialized, otherwise false.
- */
 bool Adafruit_MLX90614::begin(uint8_t addr, TwoWire *wire) {
-  _addr = addr; // needed for CRC
-  if (i2c_dev)
-    delete i2c_dev;
+  delete i2c_dev;
+  i2c_dev = nullptr;
+  if (!wire || addr > 0x7F) return false;
+  _addr = addr;
   i2c_dev = new Adafruit_I2CDevice(addr, wire);
-  return i2c_dev->begin();
+  if (!i2c_dev || !i2c_dev->begin()) {
+    delete i2c_dev;
+    i2c_dev = nullptr;
+    return false;
+  }
+  return true;
 }
 
-/**
- * @brief Read the raw value from the emissivity register
- *
- * @return uint16_t The unscaled emissivity value or '0' if reading failed
- */
-uint16_t Adafruit_MLX90614::readEmissivityReg(void) {
-  return read16(MLX90614_EMISS);
-}
-/**
- * @brief Write the raw unscaled emissivity value to the emissivity register
- *
- * @param ereg The unscaled emissivity value
- */
-void Adafruit_MLX90614::writeEmissivityReg(uint16_t ereg) {
-  write16(MLX90614_EMISS, 0); // erase
-  delay(10);
-  write16(MLX90614_EMISS, ereg);
-  delay(10);
-}
-/**
- * @brief Read the emissivity value from the sensor's register and scale
- *
- * @return double The emissivity value, ranging from 0.1 - 1.0 or NAN if reading
- * failed
- */
-double Adafruit_MLX90614::readEmissivity(void) {
-  uint16_t ereg = read16(MLX90614_EMISS);
-  if (ereg == 0)
-    return NAN;
-  return ((double)ereg) / 65535.0;
-}
-/**
- * @brief Set the emissivity value
- *
- * @param emissivity The emissivity value to use, between 0.1 and 1.0
- */
-void Adafruit_MLX90614::writeEmissivity(double emissivity) {
-  uint16_t ereg = (uint16_t)(0xffff * emissivity);
-
-  writeEmissivityReg(ereg);
+void Adafruit_MLX90614::requestSMBus(uint8_t sclPin) {
+  digitalWrite(sclPin, LOW);
+  pinMode(sclPin, OUTPUT);
+  delay(2); // tREQ > 1.44ms, below the SMBus low timeout.
+  pinMode(sclPin, INPUT); // Release to the external bus pull-up.
+  delay(1);
 }
 
-/**
- * @brief Get the current temperature of an object in degrees Farenheit
- *
- * @return double The temperature in degrees Farenheit or NAN if reading failed
- */
-double Adafruit_MLX90614::readObjectTempF(void) {
-  return (readTemp(MLX90614_TOBJ1) * 9 / 5) + 32;
+uint16_t Adafruit_MLX90614::readEmissivityReg() {
+  uint16_t value;
+  return read16(MLX90614_EMISS, value) ? value : 0;
 }
-/**
- * @brief Get the current ambient temperature in degrees Farenheit
- *
- * @return double The temperature in degrees Farenheit or NAN if reading failed
- */
-double Adafruit_MLX90614::readAmbientTempF(void) {
-  return (readTemp(MLX90614_TA) * 9 / 5) + 32;
+bool Adafruit_MLX90614::writeEmissivityReg(uint16_t value) {
+  return value >= 6554 && writeEEPROM(MLX90614_EMISS, value);
 }
-
-/**
- * @brief Get the current temperature of an object in degrees Celcius
- *
- * @return double The temperature in degrees Celcius or NAN if reading failed
- */
-double Adafruit_MLX90614::readObjectTempC(void) {
-  return readTemp(MLX90614_TOBJ1);
+double Adafruit_MLX90614::readEmissivity() {
+  uint16_t value = readEmissivityReg();
+  return value ? value / 65535.0 : NAN;
+}
+bool Adafruit_MLX90614::writeEmissivity(double emissivity) {
+  if (!isfinite(emissivity) || emissivity < 0.1 || emissivity > 1.0) return false;
+  return writeEmissivityReg(static_cast<uint16_t>(65535.0 * emissivity + 0.5));
 }
 
-/**
- * @brief Get the current ambient temperature in degrees Celcius
- *
- * @return double The temperature in degrees Celcius or NAN if reading failed
- */
-double Adafruit_MLX90614::readAmbientTempC(void) {
-  return readTemp(MLX90614_TA);
-}
-
+double Adafruit_MLX90614::readObjectTempC() { return readTemp(MLX90614_TOBJ1); }
+double Adafruit_MLX90614::readAmbientTempC() { return readTemp(MLX90614_TA); }
+double Adafruit_MLX90614::readObjectTempF() { return readObjectTempC() * 1.8 + 32; }
+double Adafruit_MLX90614::readAmbientTempF() { return readAmbientTempC() * 1.8 + 32; }
 float Adafruit_MLX90614::readTemp(uint8_t reg) {
-  float temp;
-
-  temp = read16(reg);
-  if (temp == 0)
-    return NAN;
-  temp *= .02;
-  temp -= 273.15;
-  return temp;
+  uint16_t value;
+  if (!read16(reg, value) || value == 0 || (value & 0x8000)) return NAN;
+  return value * 0.02f - 273.15f;
 }
 
-/*********************************************************************/
-
-uint16_t Adafruit_MLX90614::read16(uint8_t a) {
+bool Adafruit_MLX90614::read16(uint8_t reg, uint16_t &value) {
+  if (!i2c_dev) return false;
   uint8_t buffer[3];
-  buffer[0] = a;
-  // read two bytes of data + pec
-  bool status = i2c_dev->write_then_read(buffer, 1, buffer, 3);
-  if (!status)
-    return 0;
-  // return data, ignore pec
-  return uint16_t(buffer[0]) | (uint16_t(buffer[1]) << 8);
+  if (!i2c_dev->write_then_read(&reg, 1, buffer, 3)) return false;
+  uint8_t frame[5] = {static_cast<uint8_t>(_addr << 1), reg,
+    static_cast<uint8_t>((_addr << 1) | 1), buffer[0], buffer[1]};
+  if (crc8(frame, 5) != buffer[2]) return false;
+  value = static_cast<uint16_t>(buffer[0]) | (static_cast<uint16_t>(buffer[1]) << 8);
+  return true;
 }
 
-byte Adafruit_MLX90614::crc8(byte *addr, byte len)
-// The PEC calculation includes all bits except the START, REPEATED START, STOP,
-// ACK, and NACK bits. The PEC is a CRC-8 with polynomial X8+X2+X1+1.
-{
+byte Adafruit_MLX90614::crc8(byte *data, byte length) {
   byte crc = 0;
-  while (len--) {
-    byte inbyte = *addr++;
-    for (byte i = 8; i; i--) {
-      byte carry = (crc ^ inbyte) & 0x80;
-      crc <<= 1;
-      if (carry)
-        crc ^= 0x7;
-      inbyte <<= 1;
-    }
+  while (length--) {
+    crc ^= *data++;
+    for (byte i = 0; i < 8; ++i)
+      crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : (crc << 1);
   }
   return crc;
 }
 
-void Adafruit_MLX90614::write16(uint8_t a, uint16_t v) {
-  uint8_t buffer[4];
-
-  buffer[0] = _addr << 1;
-  buffer[1] = a;
-  buffer[2] = v & 0xff;
-  buffer[3] = v >> 8;
-
-  uint8_t pec = crc8(buffer, 4);
-
-  buffer[0] = buffer[1];
-  buffer[1] = buffer[2];
-  buffer[2] = buffer[3];
-  buffer[3] = pec;
-
-  i2c_dev->write(buffer, 4);
+bool Adafruit_MLX90614::write16(uint8_t reg, uint16_t value) {
+  if (!i2c_dev) return false;
+  uint8_t frame[4] = {static_cast<uint8_t>(_addr << 1), reg,
+    static_cast<uint8_t>(value), static_cast<uint8_t>(value >> 8)};
+  uint8_t buffer[4] = {reg, frame[2], frame[3], crc8(frame, 4)};
+  return i2c_dev->write(buffer, 4);
 }
 
-
-//*** CUSTOM FUNCTIONALITY
-
-// MIN TEMP
-int Adafruit_MLX90614::readTempMin(void) {
-  uint16_t tminreg = read16(MLX90614_TOMIN);
-  return static_cast<int>(tminreg);
-}
-
-void Adafruit_MLX90614::writeTempMin(int temp_min) {
-  // ensure temp is within the range of a 16-bit unsigned integer
-  if (temp_min < 0 || temp_min > UINT16_MAX) {
-    return;
-  }
-
-  uint16_t tminreg = static_cast<uint16_t>(temp_min);
-  write16(MLX90614_TOMIN, 0); // erase
+bool Adafruit_MLX90614::writeEEPROM(uint8_t reg, uint16_t value) {
+  uint16_t current;
+  if (!read16(reg, current)) return false;
+  if (current == value) return true; // Avoid needless erase cycles at startup.
+  if (!write16(reg, 0)) return false;
   delay(10);
-  write16(MLX90614_TOMIN, tminreg);
+  if (!read16(reg, current) || current != 0) return false;
+  if (!write16(reg, value)) return false;
   delay(10);
+  return read16(reg, current) && current == value;
 }
 
-// MAX TEMP
-int Adafruit_MLX90614::readTempMax(void) {
-  uint16_t tmaxreg = read16(MLX90614_TOMAX);
-  return static_cast<int>(tmaxreg);
+bool Adafruit_MLX90614::encodeLimit(float celsius, uint16_t &word) {
+  if (!isfinite(celsius) || celsius < -70.0f || celsius > 380.0f) return false;
+  word = static_cast<uint16_t>((celsius + 273.15f) * 100.0f + 0.5f);
+  return true;
+}
+float Adafruit_MLX90614::readTempMin() {
+  uint16_t word;
+  return read16(MLX90614_TOMIN, word) ? word / 100.0f - 273.15f : NAN;
+}
+float Adafruit_MLX90614::readTempMax() {
+  uint16_t word;
+  return read16(MLX90614_TOMAX, word) ? word / 100.0f - 273.15f : NAN;
+}
+bool Adafruit_MLX90614::writeTempMin(float minTemp) {
+  uint16_t minimum, maximum;
+  return encodeLimit(minTemp, minimum) && read16(MLX90614_TOMAX, maximum)
+    && minimum < maximum && writeEEPROM(MLX90614_TOMIN, minimum);
+}
+bool Adafruit_MLX90614::writeTempMax(float maxTemp) {
+  uint16_t minimum, maximum;
+  return encodeLimit(maxTemp, maximum) && read16(MLX90614_TOMIN, minimum)
+    && maximum > minimum && writeEEPROM(MLX90614_TOMAX, maximum);
+}
+bool Adafruit_MLX90614::writeTemperatureRange(float minTemp, float maxTemp) {
+  uint16_t minimum, maximum, oldMaximum;
+  if (!encodeLimit(minTemp, minimum) || !encodeLimit(maxTemp, maximum)
+      || minimum >= maximum || !read16(MLX90614_TOMAX, oldMaximum)) return false;
+  // Preserve an ordered range between the two writes. A failure is reported;
+  // EEPROM updates cannot be made atomic across two cells.
+  if (minimum >= oldMaximum)
+    return writeEEPROM(MLX90614_TOMAX, maximum) && writeEEPROM(MLX90614_TOMIN, minimum);
+  return writeEEPROM(MLX90614_TOMIN, minimum) && writeEEPROM(MLX90614_TOMAX, maximum);
 }
 
-void Adafruit_MLX90614::writeTempMax(int temp_max) {
-  // ensure temp is within the range of a 16-bit unsigned integer
-  if (temp_max < 0 || temp_max > UINT16_MAX) {
-    return;
-  }
-
-  uint16_t tmaxreg = static_cast<uint16_t>(temp_max);
-
-  write16(MLX90614_TOMAX, 0); // erase
-  delay(10);
-  write16(MLX90614_TOMAX, tmaxreg);
-  delay(10);
+uint16_t Adafruit_MLX90614::readI2CAddr() {
+  uint16_t word;
+  return read16(MLX90614_ADDR, word) ? word & 0x7F : 0xFFFF;
 }
-
-// COMMUNICATION PROTOCOL
-uint16_t Adafruit_MLX90614::readI2CAddr(void) {
-  return read16(MLX90614_PWMCTRL);
-}
-
 String Adafruit_MLX90614::getCommunicationMode() {
-  uint16_t registerValue = read16(MLX90614_PWMCTRL);
-
-  // Check bit 1
-  // 0 -> PWM mode disabled
-  // 1 -> PWM mode enabled
-  bool bit1 = registerValue & (1 << 1);
-
-  if (bit1) {
-    return "PWM";
-  } else {
-    return "I2C";
-  }
+  uint16_t word;
+  if (!read16(MLX90614_PWMCTRL, word)) return "Unknown";
+  return (word & 2) ? "PWM" : "I2C";
 }
-
-void Adafruit_MLX90614::switchToI2C() {
-  uint16_t registerValue = read16(MLX90614_PWMCTRL);
-
-  // Set bit 1: Enable/disable PWM
-    // 0 -> PWM mode disabled
-  // 1 -> PWM mode enabled
-  registerValue &= ~(1 << 1);
-
-  // Erase the existing value in the register
-  write16(MLX90614_PWMCTRL, 0);
-  delay(10);
-
-  // Write the updated value back to the register
-  write16(MLX90614_PWMCTRL, registerValue);
-  delay(10);
+bool Adafruit_MLX90614::switchToI2C() {
+  uint16_t word;
+  return read16(MLX90614_PWMCTRL, word)
+    && writeEEPROM(MLX90614_PWMCTRL, word & ~uint16_t(2));
 }
-
-void Adafruit_MLX90614::switchToPWM() {
-  bool singleMode = true;
-  bool pushPull = true;
-
-  uint16_t registerValue = read16(MLX90614_PWMCTRL);
-
-  // Set bit 0: Select the type of PWM mode
-  // 0 -> Extended mode
-  // 1 -> Single mode
-  if (singleMode) {
-    registerValue |= (1 << 0);
-  } else {
-    registerValue &= ~(1 << 0);
-  }
-
-  // Set bit 1: Enable/disable PWM
-  // 0 -> PWM mode disabled
-  // 1 -> PWM mode enabled
-  registerValue |= (1 << 1);
-
-  // Set bit 2: Configuration of the pin PWM
-  // 0 -> Open drain
-  // 1 -> Push-pull
-  if (pushPull) {
-    registerValue |= (1 << 2);
-  } else {
-    registerValue &= ~(1 << 2);
-  }
-
-  // Erase the existing value in the register
-  write16(MLX90614_PWMCTRL, 0);
-  delay(10);
-
-  // Write the updated value back to the register
-  write16(MLX90614_PWMCTRL, registerValue);
-  delay(10);
-
-  // Erase the existing value in the register
-  write16(MLX90614_CONFIG, 0);
-  delay(10);
-
-  // Write the default value back to the register
-  write16(MLX90614_CONFIG, 0xB7F4);
-  delay(10);
+bool Adafruit_MLX90614::switchToPWM(uint8_t period) {
+  if (period == 0 || period > 127) return false;
+  uint16_t pwm, config;
+  if (!read16(MLX90614_PWMCTRL, pwm) || !read16(MLX90614_CONFIG, config)) return false;
+  // Single mode, enabled, push-pull. Config[5:4]=11 selects object1 for PWM1;
+  // preserve calibration, filtering, and every unrelated configuration bit.
+  if (!writeEEPROM(MLX90614_CONFIG, (config & ~uint16_t(0x30)) | 0x30)) return false;
+  // Explicitly choose PWM (not thermal relay), no repetitions, and period.
+  return writeEEPROM(MLX90614_PWMCTRL, (static_cast<uint16_t>(period) << 9) | 0x07);
 }
-
-// DEBUGGING
 void Adafruit_MLX90614::printAllRegisters() {
-  Serial.println("MLX90614 Registers:");
-  Serial.println("Register\tValue\t\tBinary");
-  Serial.println("--------\t-----\t\t------");
-
-  for (int i = 0; i < 0x40; i++) {
-    uint16_t registerValue = read16(i);
-    Serial.print(i, HEX);
-    Serial.print("\t\t");
-    Serial.print(registerValue, HEX);
-    Serial.print("\t\t");
-    Serial.println(registerValue, BIN);
+  Serial.println("MLX90614 registers (hex):");
+  for (uint8_t reg = 0; reg < 0x40; ++reg) {
+    uint16_t value;
+    Serial.print(reg, HEX);
+    Serial.print(": ");
+    if (read16(reg, value)) Serial.println(value, HEX);
+    else Serial.println("read failed");
   }
 }
